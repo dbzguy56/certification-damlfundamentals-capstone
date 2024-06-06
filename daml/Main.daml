@@ -1,0 +1,102 @@
+module Main where
+
+import DA.Time
+
+data BookingInfo = BookingInfo with
+    basePrice: Decimal
+    startDate: Date
+    endDate: Date
+    guestsStaying: Either Party [Party] -- 1 or more people staying
+        deriving (Show, Eq, Ord)
+
+class Price i o where
+    getPrice: i -> o
+
+instance Price BookingInfo Decimal where
+    getPrice booking = 
+        let
+            startT: Time
+            startT = time booking.startDate 09 00 00
+
+            endT: Time
+            endT = time booking.endDate 18 00 00
+
+            diffInRelTime: RelTime
+            diffInRelTime = subTime endT startT
+
+            numDays: Int
+            numDays = wholeDays diffInRelTime
+        in (intToDecimal numDays) * booking.basePrice
+
+template BookingProposal
+    with
+        guest: Party
+        host: Party
+        bookingInfo: BookingInfo
+        note: Text
+    where
+        signatory guest
+        observer host
+
+        key (guest, bookingInfo) : (Party, BookingInfo)
+        maintainer key._1
+
+        ensure (bookingInfo.startDate < bookingInfo.endDate) -- endDate has to be later than startDate
+
+        -- guest can cancel booking proposal
+        choice Cancel: ()
+            controller guest
+            do
+                return ()
+
+        -- guest can revise proposal, it is only consumed when it is a valid revision
+        -- (different dates than the original proposed)
+        nonconsuming choice Revise: ContractId BookingProposal
+            with
+                newBookingInfo: BookingInfo
+            controller guest
+            do
+                assertMsg "The booking needs different dates if you want it to be revised!" 
+                    (  this.bookingInfo.startDate /= newBookingInfo.startDate 
+                    && this.bookingInfo.endDate /= newBookingInfo.endDate )
+                archive self
+                create this with
+                    bookingInfo = newBookingInfo
+        
+        -- host can Reject the guest with feedback
+        choice Reject: ContractId BookingProposal
+            with
+                feedback: Text
+            controller host
+            do
+                create this with
+                    note = feedback
+
+        -- host can approve the proposal and create a Booking contract
+        choice Approve: ContractId Booking
+            with
+                family: Bool -- family doesn't pay for bookings
+            controller host
+            do
+                create Booking with
+                    bookingInfo
+                    price = if family then None else Some $ getPrice bookingInfo
+                    host
+
+
+template Booking
+    with
+        bookingInfo: BookingInfo    
+        price: Optional Decimal
+        host: Party
+    where 
+        signatory host
+
+        key (host, bookingInfo): (Party, BookingInfo)
+        maintainer key._1
+
+        -- if host needs to cancel booking for whatever reason
+        choice CancelBooking: ()
+            controller host
+            do
+                return ()

@@ -1,0 +1,112 @@
+module Test where
+
+import Main
+import Setup
+import Daml.Script
+import DA.Date
+
+{--
+1 Full scenario through the 3 happy paths:
+    1. testCreateBookingProposal 
+        - guest can create a BookingProposal contract 
+        - host can either Reject or Approve
+    2. testBookingProposal - guest and host can exercise Reject, Revise
+    3. testCreateBooking - host can Approve to create a Booking contract
+--}
+
+-- Happy path: guest can create a BookingProposal contract and host can either Reject or Approve
+testCreateBookingProposal = do
+    (testParties@TestParties{..}, testBookingInfos@TestBookingInfos{..}) <- setupBookingInfos
+    -- guest creates BookingProposal contract
+    proposal3 <- submit guest do
+        createCmd BookingProposal with
+            host
+            guest
+            bookingInfo = bookingInfo3
+            note = ""
+    
+    return (testParties, testBookingInfos, proposal3)
+
+-- Happy path: guest and host can exercise Reject, Revise
+testBookingProposal = do
+    (testParties@TestParties{..}, testBookingInfos@TestBookingInfos{..}, proposal3) <- testCreateBookingProposal
+
+    -- host exercises Reject
+    rejectedProposal <- submit host do
+        exerciseCmd proposal3 Reject with
+            feedback = foldl (\acc x -> acc <> " " <> x <> ".") "" ["Sorry it is unavailable at that date", "It is under renovation"]
+
+    let
+        revisedBookingInfo = BookingInfo with
+            basePrice = 50.0
+            startDate = date 2023 Feb 1
+            endDate = date 2023 Mar 25
+            guestsStaying = Left guest    
+    
+    -- guest exercises Revise
+    revisedProposal <- submit guest do
+        exerciseCmd rejectedProposal Revise with
+            newBookingInfo = revisedBookingInfo
+
+    return (testParties, testBookingInfos, revisedProposal)
+
+-- Happy path:  host can Approve to create a Booking contract
+testCreateBooking = script do 
+    (testParties@TestParties{..}, testBookingInfos@TestBookingInfos{..}, revisedProposal) <- testBookingProposal
+    
+    -- host exercises Approve, where family == false means they pay the price
+    approvedBooking <- submit host do
+        exerciseCmd revisedProposal Approve with
+            family = False
+    
+    return (testParties, testBookingInfos, approvedBooking)
+
+-- Unhappy path; guest cannot create a proposal where the startDate happens after endDate
+cantCreateWrongDates = script do
+    testParties@TestParties{..} <- setupTestParties
+
+    let
+        wrongdateBookingInfo = BookingInfo with
+            basePrice = 50.0
+            guestsStaying = Left guest
+            startDate = date 2023 Apr 10 -- this is after endDate
+            endDate = date 2023 Feb 15    
+
+    submitMustFail guest do
+        createCmd BookingProposal with
+            host
+            guest
+            bookingInfo = wrongdateBookingInfo
+            note = "Third proposal"
+
+-- Unhappy path: guest cannot Approve their own proposal contract
+cantApproveMyself : Script ()
+cantApproveMyself = script do
+    (testParties@TestParties{..}, _, _) <- testBookingProposal
+    [(proposalid, contract)] <- query @BookingProposal guest
+
+    submitMustFail guest do -- guest should not be able to approve here
+        exerciseCmd proposalid Approve with
+            family = True
+
+-- Unhappy path: guest cannot submit a revision with the same dates
+cantSameDatesforRevision = script do
+    (testParties@TestParties{..}, testBookingInfos@TestBookingInfos{..}, proposal3) <- testCreateBookingProposal
+
+    
+    rejectedProposal <- submit host do
+        exerciseCmd proposal3 Reject with
+            feedback = "Sorry it is unavailable at that date"
+
+    let
+        revisedBookingInfo = BookingInfo with
+            basePrice = 25.0 -- changed base price
+            startDate = date 2023 Feb 15
+            endDate = date 2023 Apr 10
+            guestsStaying = Left guest
+    
+    -- Revised and submitted with the same dates
+    submitMustFail guest do
+        exerciseCmd rejectedProposal Revise with
+            newBookingInfo = revisedBookingInfo
+    

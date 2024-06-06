@@ -1,0 +1,65 @@
+module Setup where
+
+import Main
+import DA.Date
+import Daml.Script
+
+data TestParties = TestParties with
+    host: Party
+    guest: Party
+
+setupTestParties = script do
+    -- 1. Allocate parties with the given display name
+    host <- allocatePartyWithHint "host" (PartyIdHint "HOST")
+    guest <- allocatePartyWithHint "guest" (PartyIdHint "GUEST")
+
+    return TestParties with
+        host
+        guest
+
+setupUsers = script do
+    (testParties@TestParties{..}, testBookingInfos@TestBookingInfos{..}) <- setupBookingInfos
+
+    -- 2. Construct user-ids from text
+    hostId <- validateUserId "host"   
+    aliceId <- validateUserId "Alice"
+
+    -- 3. Create users with the given rights 
+    createUser (User hostId (Some host)) [CanActAs host]  
+    createUser (User aliceId (Some guest)) [CanActAs guest]
+
+    submit guest do
+        createCmd BookingProposal with
+            guest
+            host
+            bookingInfo = bookingInfo3
+            note = "Third booking"
+
+data TestBookingInfos = TestBookingInfos with
+    bookingInfo1: BookingInfo
+    bookingInfo2: BookingInfo
+    bookingInfo3: BookingInfo
+
+setupBookingInfos = script do
+    testParties@TestParties{..} <- setupTestParties
+
+    let
+        bookingInfo1 = BookingInfo with
+            basePrice = 50.0
+            startDate = date 2023 Jan 12
+            endDate = date 2023 Jan 13
+            guestsStaying = Left guest
+
+        bookingInfo2 = BookingInfo with
+            basePrice = 50.0
+            startDate = date 2023 Jan 16
+            endDate = date 2023 Jan 17
+            guestsStaying = Right [guest, host]
+
+        bookingInfo3 = BookingInfo with
+            basePrice = 50.0
+            startDate = date 2023 Feb 15
+            endDate = date 2023 Apr 10
+            guestsStaying = Left guest
+
+    return (testParties, TestBookingInfos with {bookingInfo1, bookingInfo2, bookingInfo3})
